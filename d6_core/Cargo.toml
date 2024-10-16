@@ -1,0 +1,11 @@
+[package]
+name = "d6_core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+geometric_algebra = "0.3.0"
+glam = "0.29.0"
+itertools = "0.13.0"
+lazy_static = "1.5.0"
+map-macro = "0.3.0"

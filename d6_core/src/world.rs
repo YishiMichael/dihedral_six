@@ -15,8 +15,9 @@ use super::d6::Direction;
 use super::d6::D6;
 use super::fragment::TileFragment;
 use super::fragment::POLYGONS_DICT;
-use super::pga::MotorInterpolant;
 use super::pga::Pivot;
+use super::pga::PivotalMotion;
+use super::pga::PivotalMotionPath;
 use super::polygon::Polygons;
 use super::polygon::FRAME_POLYGONS;
 use super::polygon::MARKER_POLYGONS;
@@ -202,7 +203,7 @@ impl Direction {
 struct Route {
     initial_anchor: TileAnchor,
     terminal_anchor: TileAnchor,
-    motor_interpolant: MotorInterpolant,
+    pivotal_motion: PivotalMotion,
     fragments_requirement: HashSet<TileFragment>,
 }
 
@@ -211,7 +212,7 @@ impl Route {
         Self {
             initial_anchor: self.initial_anchor.flip(),
             terminal_anchor: self.terminal_anchor.flip(),
-            motor_interpolant: self.motor_interpolant.local_transform(
+            pivotal_motion: self.pivotal_motion.pre_transform(
                 Pivot::from_rotation_matrix(AxisSystem::NegXPosYNegZ.into_mat3()).as_motor(),
             ),
             fragments_requirement: self.fragments_requirement.clone(),
@@ -222,9 +223,9 @@ impl Route {
         Self {
             initial_anchor: self.terminal_anchor,
             terminal_anchor: self.initial_anchor,
-            motor_interpolant: self
-                .motor_interpolant
-                .local_transform(
+            pivotal_motion: self
+                .pivotal_motion
+                .pre_transform(
                     Pivot::from_rotation_matrix(AxisSystem::NegXNegYPosZ.into_mat3()).as_motor(),
                 )
                 .rewind(),
@@ -269,15 +270,15 @@ impl Route {
                 sign: TileAnchorSign::Pos,
                 stationery: true,
             },
-            motor_interpolant: MotorInterpolant::from_successive_pivots(
-                initial_motor,
+            pivotal_motion: PivotalMotion::from_pivots(
                 branch_fragment
                     .is_some()
                     .then(|| Pivot::from_translation_vector(Vec3::Y))
                     .into_iter()
                     .chain(std::iter::once(stem_pivot))
                     .collect(),
-            ),
+            )
+            .pre_transform(initial_motor),
             fragments_requirement: branch_fragment
                 .into_iter()
                 .chain(std::iter::once(stem_fragment))
@@ -499,6 +500,10 @@ pub struct World {
 }
 
 impl World {
+    fn world_coord_as_vec3(world_coord: I16Vec3) -> Vec3 {
+        2.0 * world_coord.as_vec3()
+    }
+
     fn rotation_matrix_from_action(action: D6) -> Mat3 {
         const REFLECTION_MATRIX: Mat3 = Mat3::from_cols_array_2d(&[
             [-1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0],
@@ -566,81 +571,79 @@ impl World {
     fn iter_possible_next_movement_states_from(
         movement_state: MovementState,
         tile_dict: &HashMap<I16Vec3, Tile>,
-    ) -> impl Iterator<Item = (MovementState, MotorInterpolant)> + '_ {
-        std::iter::once(movement_state)
-            .chain(World::movement_state_synonym(movement_state))
-            .flat_map(move |initial_movement_state| {
-                tile_dict
-                    .get(&initial_movement_state.world_coord)
-                    .into_iter()
-                    .flat_map(move |tile| {
-                        ROUTE_LIST.iter().filter_map(move |route| {
-                            let fragments = &tile.fragments;
-                            let action = tile.action;
-                            (route.fragments_requirement.is_subset(fragments)
-                                && route.initial_anchor.act(action)
-                                    == initial_movement_state.anchor)
-                                .then(|| {
-                                    (
-                                        MovementState {
-                                            world_coord: initial_movement_state.world_coord,
-                                            anchor: route.terminal_anchor.act(action),
-                                        },
-                                        route.motor_interpolant.clone().global_transform(
-                                            Pivot::from_translation_vector(
-                                                2.0 * initial_movement_state.world_coord.as_vec3(),
-                                            )
-                                            .as_motor()
-                                            .geometric_product(
-                                                Pivot::from_rotation_matrix(
-                                                    Self::rotation_matrix_from_action(action),
+    ) -> Box<dyn Iterator<Item = (MovementState, Vec<PivotalMotion>)> + '_> {
+        Box::new(
+            std::iter::once(movement_state)
+                .chain(World::movement_state_synonym(movement_state))
+                .flat_map(move |initial_movement_state| {
+                    tile_dict
+                        .get(&initial_movement_state.world_coord)
+                        .into_iter()
+                        .flat_map(move |tile| {
+                            ROUTE_LIST.iter().filter_map(move |route| {
+                                let fragments = &tile.fragments;
+                                let action = tile.action;
+                                (route.fragments_requirement.is_subset(fragments)
+                                    && route.initial_anchor.act(action)
+                                        == initial_movement_state.anchor)
+                                    .then(|| {
+                                        (
+                                            MovementState {
+                                                world_coord: initial_movement_state.world_coord,
+                                                anchor: route.terminal_anchor.act(action),
+                                            },
+                                            route.pivotal_motion.clone().post_transform(
+                                                Pivot::from_translation_vector(
+                                                    Self::world_coord_as_vec3(
+                                                        initial_movement_state.world_coord,
+                                                    ),
                                                 )
-                                                .as_motor(),
+                                                .as_motor()
+                                                .geometric_product(
+                                                    Pivot::from_rotation_matrix(
+                                                        Self::rotation_matrix_from_action(action),
+                                                    )
+                                                    .as_motor(),
+                                                ),
                                             ),
-                                        ),
-                                    )
-                                })
+                                        )
+                                    })
+                            })
                         })
-                    })
-            })
-            .flat_map(|(terminal_movement_state, motor_interpolant)| {
-                terminal_movement_state
-                    .anchor
-                    .stationery
-                    .then(|| {
-                        std::iter::once((terminal_movement_state, motor_interpolant.clone()))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_else(|| {
-                        Self::iter_possible_next_movement_states_from(
-                            terminal_movement_state,
-                            tile_dict,
-                        )
-                        .map(
-                            |(successive_terminal_movement_state, successive_motor_interpolant)| {
-                                (
-                                    successive_terminal_movement_state,
-                                    motor_interpolant
-                                        .clone()
-                                        .chain(successive_motor_interpolant),
-                                )
-                            },
-                        )
-                        .collect()
-                    })
-            })
-            .filter(move |(terminal_movement_state, _)| {
-                std::iter::once(movement_state)
-                    .chain(World::movement_state_synonym(movement_state))
-                    .all(|initial_movement_state| {
-                        initial_movement_state != *terminal_movement_state
-                    })
-            })
+                })
+                .flat_map(|(terminal_movement_state, pivotal_motion)| {
+                    (!terminal_movement_state.anchor.stationery)
+                        .then(|| {
+                            Self::iter_possible_next_movement_states_from(
+                                terminal_movement_state,
+                                tile_dict,
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            Box::new(std::iter::once((terminal_movement_state, Vec::new())))
+                        })
+                        .map(move |(terminal_movement_state, pivotal_motions)| {
+                            (
+                                terminal_movement_state,
+                                std::iter::once(pivotal_motion.clone())
+                                    .chain(pivotal_motions)
+                                    .collect::<Vec<_>>(),
+                            )
+                        })
+                })
+                .filter(move |(terminal_movement_state, _)| {
+                    std::iter::once(movement_state)
+                        .chain(World::movement_state_synonym(movement_state))
+                        .all(|initial_movement_state| {
+                            initial_movement_state != *terminal_movement_state
+                        })
+                }),
+        )
     }
 
     fn iter_possible_next_movement_states(
         &self,
-    ) -> impl Iterator<Item = (MovementState, MotorInterpolant)> + '_ {
+    ) -> Box<dyn Iterator<Item = (MovementState, Vec<PivotalMotion>)> + '_> {
         Self::iter_possible_next_movement_states_from(self.movement_state, &self.tile_dict)
     }
 
@@ -691,7 +694,7 @@ impl World {
                         .get(tile_fragment)
                         .unwrap()
                         .clone()
-                        .transform(Mat4::from_translation(2.0 * coord.as_vec3())),
+                        .transform(Mat4::from_translation(Self::world_coord_as_vec3(coord))),
                 )
             })
     }
@@ -704,7 +707,7 @@ impl World {
             Self::iter_shapes_from_polygons(
                 FRAME_POLYGONS
                     .clone()
-                    .transform(Mat4::from_translation(2.0 * coord.as_vec3())),
+                    .transform(Mat4::from_translation(Self::world_coord_as_vec3(coord))),
             )
         })
     }
@@ -713,44 +716,48 @@ impl World {
         Self::iter_shapes_from_polygons(
             PLAYER_POLYGONS
                 .clone()
-                .transform(MotorInterpolant::matrix_from_motor(self.motor)),
+                .transform(PivotalMotion::matrix_from_motor(self.motor)),
         )
     }
 
     pub fn iter_marker_shapes(&self) -> impl Iterator<Item = (Vec<Vec2>, Vec3)> + '_ {
         self.iter_possible_next_movement_states()
-            .map(|(_, motor_interpolant)| {
-                MotorInterpolant::matrix_from_motor(motor_interpolant.terminal_motor())
+            .map(|(_, pivotal_motions)| {
+                PivotalMotion::matrix_from_motor(
+                    PivotalMotionPath::from_pivotal_motions(pivotal_motions).terminal_motor(),
+                )
             })
             .flat_map(|transform| {
                 Self::iter_shapes_from_polygons(MARKER_POLYGONS.clone().transform(transform))
             })
     }
 
-    pub fn motion(&mut self, cursor_coord: Vec2) -> Option<MotorInterpolant> {
+    pub fn motion(&mut self, cursor_coord: Vec2) -> Option<PivotalMotionPath> {
         const RADIUS_THRESHOLD: f32 = 1.0;
         const ANGLE_THRESHOLD: f32 = std::f32::consts::FRAC_PI_6;
         self.iter_possible_next_movement_states()
-            .filter_map(|(movement_state, motor_interpolant)| {
+            .filter_map(|(movement_state, pivotal_motions)| {
                 let player_coord = Self::conformal_transform(
-                    MotorInterpolant::matrix_from_motor(self.motor).transform_point3(Vec3::ZERO),
+                    PivotalMotion::matrix_from_motor(self.motor).transform_point3(Vec3::ZERO),
                 );
+                let player_coord = Some(player_coord).filter(|player_coord| {
+                    (cursor_coord - *player_coord).length() > RADIUS_THRESHOLD
+                })?;
+                let pivotal_motion_path = PivotalMotionPath::from_pivotal_motions(pivotal_motions);
                 let target_coord = Self::conformal_transform(
-                    MotorInterpolant::matrix_from_motor(motor_interpolant.terminal_motor())
+                    PivotalMotion::matrix_from_motor(pivotal_motion_path.terminal_motor())
                         .transform_point3(Vec3::ZERO),
                 );
                 let abs_angle = (target_coord - player_coord)
                     .angle_to(cursor_coord - player_coord)
                     .abs();
-
-                ((cursor_coord - player_coord).length() > RADIUS_THRESHOLD
-                    && abs_angle < ANGLE_THRESHOLD)
-                    .then(|| (movement_state, motor_interpolant, abs_angle))
+                let abs_angle = Some(abs_angle).filter(|abs_angle| *abs_angle < ANGLE_THRESHOLD)?;
+                Some((movement_state, pivotal_motion_path, abs_angle))
             })
             .min_by(|(_, _, abs_angle_0), (_, _, abs_angle_1)| abs_angle_0.total_cmp(abs_angle_1))
-            .map(|(movement_state, motor_interpolant, _)| {
+            .map(|(movement_state, pivotal_motion_path, _)| {
                 self.movement_state = movement_state;
-                motor_interpolant
+                pivotal_motion_path
             })
     }
 
@@ -944,11 +951,12 @@ fn test() {
     let world = &WORLD_LIST[0];
     world
         .iter_possible_next_movement_states()
-        .for_each(|(movement_state, motor_interpolant)| {
+        .for_each(|(movement_state, pivotal_motions)| {
+            let pivotal_motion_path = PivotalMotionPath::from_pivotal_motions(pivotal_motions);
             dbg!(
                 movement_state,
-                motor_interpolant.initial_motor(),
-                motor_interpolant.terminal_motor()
+                pivotal_motion_path.initial_motor(),
+                pivotal_motion_path.terminal_motor()
             );
         });
 }

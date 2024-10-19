@@ -35,7 +35,7 @@ impl Pivot {
         Self::from_plucker(Vec3::ZERO, Vec3::ZERO)
     }
 
-    pub fn as_motor(&self) -> Motor {
+    fn as_motor(&self) -> Motor {
         (self.0 * (-1.0 / 2.0)).exp()
     }
 
@@ -63,10 +63,20 @@ impl PivotalMotion {
         }
     }
 
-    pub fn transform(self, motor: Motor) -> Self {
+    // pub fn initial_motor(&self) -> Motor {
+    //     self.motor
+    // }
+
+    pub fn target(&self) -> Mat4 {
+        Self::matrix_from_motor(self.pivots.iter().fold(self.motor, |motor, pivot| {
+            motor.geometric_product(pivot.as_motor())
+        }))
+    }
+
+    pub fn pivotal_transform(self, pivot: Pivot) -> Self {
         Self {
             pivots: self.pivots,
-            motor: motor.geometric_product(self.motor),
+            motor: pivot.as_motor().geometric_product(self.motor),
         }
     }
 
@@ -84,7 +94,7 @@ impl PivotalMotion {
         }
     }
 
-    pub fn matrix_from_motor(motor: Motor) -> Mat4 {
+    fn matrix_from_motor(motor: Motor) -> Mat4 {
         let x_axis = motor.transformation(Point::new(0.0, 1.0, 0.0, 0.0));
         let y_axis = motor.transformation(Point::new(0.0, 0.0, 1.0, 0.0));
         let z_axis = motor.transformation(Point::new(0.0, 0.0, 0.0, 1.0));
@@ -123,37 +133,40 @@ impl PivotalMotionPath {
                         },
                     )
                 })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
                 .collect(),
         )
     }
 
-    pub fn consume_distance(&mut self, consumed_distance: f32) -> Option<Motor> {
+    pub fn consume_distance(&mut self, consumed_distance: f32) -> Option<Mat4> {
         let (pivot, motor, distance) = self.0.pop()?;
         (consumed_distance <= distance)
             .then(|| {
                 let next_motor = motor.geometric_product(pivot.scale(consumed_distance).as_motor());
                 self.0
                     .push((pivot, next_motor, distance - consumed_distance));
-                next_motor
+                PivotalMotion::matrix_from_motor(next_motor)
             })
             .or_else(|| self.consume_distance(consumed_distance - distance))
     }
 
-    pub fn initial_motor(&self) -> Motor {
-        self.0
-            .last()
-            .map(|(_, motor, _)| motor.clone())
-            .unwrap_or_else(|| Pivot::zero().as_motor())
-    }
+    // pub fn initial_motor(&self) -> Motor {
+    //     self.0
+    //         .last()
+    //         .map(|(_, motor, _)| motor.clone())
+    //         .unwrap_or_else(|| Pivot::zero().as_motor())
+    // }
 
-    pub fn terminal_motor(&self) -> Motor {
-        self.0
-            .first()
-            .map(|(pivot, motor, distance)| {
-                motor.geometric_product(pivot.scale(*distance).as_motor())
-            })
-            .unwrap_or_else(|| Pivot::zero().as_motor())
-    }
+    // pub fn terminal_motor(&self) -> Motor {
+    //     self.0
+    //         .first()
+    //         .map(|(pivot, motor, distance)| {
+    //             motor.geometric_product(pivot.scale(*distance).as_motor())
+    //         })
+    //         .unwrap_or_else(|| Pivot::zero().as_motor())
+    // }
 
     // pub fn from_successive_pivots(initial_motor: Motor, pivots: Vec<Pivot>) -> Self {
     //     Self {

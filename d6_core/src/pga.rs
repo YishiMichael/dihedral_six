@@ -52,14 +52,16 @@ impl Pivot {
 #[derive(Clone, Debug)]
 pub struct PivotalMotion {
     pivots: Vec<Pivot>,
-    motor: Motor,
+    pre_motor: Motor,
+    post_motor: Motor,
 }
 
 impl PivotalMotion {
     pub fn from_pivots(pivots: Vec<Pivot>) -> Self {
         Self {
             pivots,
-            motor: Pivot::zero().as_motor(),
+            pre_motor: Pivot::zero().as_motor(),
+            post_motor: Pivot::zero().as_motor(),
         }
     }
 
@@ -68,15 +70,29 @@ impl PivotalMotion {
     // }
 
     pub fn target(&self) -> Mat4 {
-        Self::matrix_from_motor(self.pivots.iter().fold(self.motor, |motor, pivot| {
-            motor.geometric_product(pivot.as_motor())
-        }))
+        Self::matrix_from_motor(
+            self.pivots
+                .iter()
+                .fold(self.post_motor, |motor, pivot| {
+                    motor.geometric_product(pivot.as_motor())
+                })
+                .geometric_product(self.pre_motor),
+        )
     }
 
-    pub fn pivotal_transform(self, pivot: Pivot) -> Self {
+    pub fn pivotal_local_transform(self, pivot: Pivot) -> Self {
         Self {
             pivots: self.pivots,
-            motor: pivot.as_motor().geometric_product(self.motor),
+            pre_motor: pivot.as_motor().geometric_product(self.pre_motor),
+            post_motor: self.post_motor,
+        }
+    }
+
+    pub fn pivotal_global_transform(self, pivot: Pivot) -> Self {
+        Self {
+            pivots: self.pivots,
+            pre_motor: self.pre_motor,
+            post_motor: pivot.as_motor().geometric_product(self.post_motor),
         }
     }
 
@@ -88,7 +104,8 @@ impl PivotalMotion {
                 .rev()
                 .map(|pivot| pivot.scale(-1.0))
                 .collect(),
-            motor: self.pivots.iter().fold(self.motor, |motor, pivot| {
+            pre_motor: self.pre_motor,
+            post_motor: self.pivots.iter().fold(self.post_motor, |motor, pivot| {
                 motor.geometric_product(pivot.as_motor())
             }),
         }
@@ -111,7 +128,7 @@ impl PivotalMotion {
 }
 
 #[derive(Clone, Debug)]
-pub struct PivotalMotionPath(Vec<(Pivot, Motor, f32)>);
+pub struct PivotalMotionPath(Vec<(Pivot, Motor, Motor, f32)>);
 
 impl PivotalMotionPath {
     pub fn from_pivotal_motions(pivotal_motions: Vec<PivotalMotion>) -> Self {
@@ -119,17 +136,22 @@ impl PivotalMotionPath {
             pivotal_motions
                 .into_iter()
                 .flat_map(|pivotal_motion| {
+                    let point = pivotal_motion
+                        .pre_motor
+                        .transformation(Point::new(1.0, 0.0, 0.0, 0.0))
+                        .signum();
                     pivotal_motion.pivots.into_iter().scan(
-                        pivotal_motion.motor,
+                        pivotal_motion.post_motor,
                         move |motor_state, pivot| {
-                            let motor = *motor_state;
-                            let distance = pivot.distance(
-                                motor
-                                    .transformation(Point::new(1.0, 0.0, 0.0, 0.0))
-                                    .signum(),
-                            );
-                            *motor_state = motor.geometric_product(pivot.as_motor());
-                            Some((pivot.scale(1.0 / distance), motor, distance))
+                            let post_motor = *motor_state;
+                            let distance = pivot.distance(point);
+                            *motor_state = post_motor.geometric_product(pivot.as_motor());
+                            Some((
+                                pivot.scale(1.0 / distance),
+                                pivotal_motion.pre_motor,
+                                post_motor,
+                                distance,
+                            ))
                         },
                     )
                 })
@@ -141,13 +163,18 @@ impl PivotalMotionPath {
     }
 
     pub fn consume_distance(&mut self, consumed_distance: f32) -> Option<Mat4> {
-        let (pivot, motor, distance) = self.0.pop()?;
+        let (pivot, pre_motor, post_motor, distance) = self.0.pop()?;
         (consumed_distance <= distance)
             .then(|| {
-                let next_motor = motor.geometric_product(pivot.scale(consumed_distance).as_motor());
-                self.0
-                    .push((pivot, next_motor, distance - consumed_distance));
-                PivotalMotion::matrix_from_motor(next_motor)
+                let next_post_motor =
+                    post_motor.geometric_product(pivot.scale(consumed_distance).as_motor());
+                self.0.push((
+                    pivot,
+                    pre_motor,
+                    next_post_motor,
+                    distance - consumed_distance,
+                ));
+                PivotalMotion::matrix_from_motor(next_post_motor.geometric_product(pre_motor))
             })
             .or_else(|| self.consume_distance(consumed_distance - distance))
     }

@@ -1,8 +1,6 @@
-use geometric_algebra::Ln;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-use geometric_algebra::ppga3d::Motor;
 use glam::I16Vec3;
 use glam::Mat3;
 use glam::Mat4;
@@ -17,7 +15,7 @@ use super::fragment::TileFragment;
 use super::fragment::POLYGONS_DICT;
 use super::pga::Pivot;
 use super::pga::PivotalMotion;
-use super::pga::PivotalMotionPath;
+use super::pga::PivotalMotionTrajectory;
 use super::polygon::Polygons;
 use super::polygon::FRAME_POLYGONS;
 use super::polygon::MARKER_POLYGONS;
@@ -68,17 +66,6 @@ impl TileExternalAnchorPosition {
             Self::RearRight => I16Vec3 { x: -1, y: 0, z: 1 },
         }
     }
-
-    //fn into_vec3(self) -> Vec3 {
-    //    match self {
-    //        Self::ForeLeft => Vec3::new(2.0, 1.0, 0.0),
-    //        Self::ForeRight => Vec3::new(1.0, 2.0, 0.0),
-    //        Self::SideLeft => Vec3::new(1.0, -1.0, 0.0),
-    //        Self::SideRight => Vec3::new(-1.0, 1.0, 0.0),
-    //        Self::RearLeft => Vec3::new(-1.0, -2.0, 0.0),
-    //        Self::RearRight => Vec3::new(-2.0, -1.0, 0.0),
-    //    }
-    //}
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -111,15 +98,6 @@ impl std::ops::BitXor<bool> for TileAnchorSign {
     }
 }
 
-//impl TileAnchorSign {
-//    fn flip(self) -> Self {
-//        match self {
-//            Self::Pos => Self::Neg,
-//            Self::Neg => Self::Pos,
-//        }
-//    }
-//}
-
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct TileAnchor {
     position_axis: TileAnchorPositionAxis,
@@ -128,14 +106,6 @@ struct TileAnchor {
 }
 
 impl TileAnchor {
-    //fn flip(self) -> Self {
-    //    Self {
-    //        position_axis: self.position_axis,
-    //        sign: self.sign.flip(),
-    //        stationery: self.stationery,
-    //    }
-    //}
-
     fn act(self, action: D6) -> Self {
         #[rustfmt::skip]
         const TILE_EXTERNAL_ANCHOR_POSITION_ACTION_TABLE: [[TileExternalAnchorPosition; 6]; 12] = {
@@ -330,13 +300,12 @@ impl RouteFamilyInfo {
         } else {
             (external_anchor, internal_anchor)
         };
-        let coord_offset = self.external_position.into_offset();
         let pivotal_motion = self
             .motion_primitive
             .pivot_motion(backward, flip)
             .pivotal_global_transform(Pivot::from_rotation_matrix(self.axis_system.into_mat3()))
             .pivotal_global_transform(Pivot::from_translation_vector(
-                coord_offset.as_vec3() - coord_offset.as_vec3().z, // TODO: needed to -z?
+                self.external_position.into_offset().as_vec3(),
             ));
         Route {
             initial_anchor,
@@ -353,105 +322,6 @@ struct Route {
     pivotal_motion: PivotalMotion,
     fragments_requirement: HashSet<TileFragment>,
 }
-
-// impl Route {
-//     fn flip(self) -> Self {
-//         Self {
-//             initial_anchor: self.initial_anchor.flip(),
-//             terminal_anchor: self.terminal_anchor.flip(),
-//             pivotal_motion: self.pivotal_motion.pre_transform(
-//                 Pivot::from_rotation_matrix(AxisSystem::NegXPosYNegZ.into_mat3()).as_motor(),
-//             ),
-//             fragments_requirement: self.fragments_requirement.clone(),
-//         }
-//     }
-
-//     fn backward(self) -> Self {
-//         Self {
-//             initial_anchor: self.terminal_anchor,
-//             terminal_anchor: self.initial_anchor,
-//             pivotal_motion: self
-//                 .pivotal_motion
-//                 .pre_transform(
-//                     Pivot::from_rotation_matrix(AxisSystem::NegXNegYPosZ.into_mat3()).as_motor(),
-//                 )
-//                 .rewind(),
-//             fragments_requirement: self.fragments_requirement.clone(),
-//         }
-//     }
-
-//     fn from_external_internal(
-//         external_position: TileExternalAnchorPosition,
-//         external_axis_system: AxisSystem,
-//         internal_position_axis: TileInternalAnchorPositionAxis,
-//         stem_altitude_slope: f32,
-//         stem_pivot_angle: f32,
-//         branch_fragment: Option<TileFragment>,
-//         stem_fragment: TileFragment,
-//     ) -> Self {
-//         let (_, _, z_direction) = external_axis_system.into_triplet();
-//         let initial_motor = Pivot::from_translation_vector(external_position.into_vec3())
-//             .as_motor()
-//             .geometric_product(
-//                 Pivot::from_rotation_matrix(external_axis_system.into_mat3()).as_motor(),
-//             );
-//         let angle_cot_angle = (stem_pivot_angle != 0.0)
-//             .then(|| stem_pivot_angle / stem_pivot_angle.tan())
-//             .unwrap_or(1.0);
-//         let stem_pivot = Pivot::from_plucker(
-//             stem_pivot_angle * Vec3::X,
-//             (angle_cot_angle - stem_pivot_angle * stem_altitude_slope) * Vec3::Y
-//                 + (angle_cot_angle * stem_altitude_slope + stem_pivot_angle) * Vec3::Z,
-//         );
-//         // dbg!(external_position.into_vec3());
-//         // dbg!(external_axis_system.into_mat3());
-//         // dbg!(Pivot::from_translation_vector(
-//         //     external_position.into_vec3()
-//         // ));
-//         // dbg!(Pivot::from_rotation_matrix(external_axis_system.into_mat3()).as_motor());
-//         // dbg!(
-//         //     Pivot::from_translation_vector(external_position.into_vec3())
-//         //         .as_motor()
-//         //         .transformation(Point::new(1.0, 0.0, 0.0, 0.0))
-//         // );
-//         // dbg!(
-//         //     Pivot::from_rotation_matrix(external_axis_system.into_mat3())
-//         //         .as_motor()
-//         //         .transformation(Point::new(1.0, 0.0, 0.0, 0.0))
-//         // );
-//         // dbg!(initial_motor.transformation(Point::new(1.0, 0.0, 0.0, 0.0)));
-//         // dbg!(stem_pivot.as_motor().ln());
-//         // dbg!(initial_motor.ln());
-//         Self {
-//             initial_anchor: TileAnchor {
-//                 position_axis: TileAnchorPositionAxis::External(
-//                     external_position,
-//                     z_direction.into_tuple().1,
-//                 ),
-//                 sign: z_direction.into_tuple().0,
-//                 stationery: branch_fragment.is_some(),
-//             },
-//             terminal_anchor: TileAnchor {
-//                 position_axis: TileAnchorPositionAxis::Internal(internal_position_axis),
-//                 sign: TileAnchorSign::Pos,
-//                 stationery: true,
-//             },
-//             pivotal_motion: PivotalMotion::from_pivots(
-//                 branch_fragment
-//                     .is_some()
-//                     .then(|| Pivot::from_translation_vector(Vec3::Y))
-//                     .into_iter()
-//                     .chain(std::iter::once(stem_pivot))
-//                     .collect(),
-//             )
-//             .pre_transform(initial_motor),
-//             fragments_requirement: branch_fragment
-//                 .into_iter()
-//                 .chain(std::iter::once(stem_fragment))
-//                 .collect(),
-//         }
-//     }
-// }
 
 #[rustfmt::skip]
 static ROUTE_FAMILY_INFO_LIST: &[RouteFamilyInfo] = &[
@@ -708,75 +578,6 @@ impl World {
                             let action = tile.action;
                             (route.initial_anchor.act(action) == initial_movement_state.anchor)
                                 .then_some(())?;
-                            /*if route.terminal_anchor
-                                == (TileAnchor {
-                                    position_axis: TileAnchorPositionAxis::External(
-                                        TileExternalAnchorPosition::ForeRight,
-                                        TileExternalAnchorAxis::Z,
-                                    ),
-                                    sign: TileAnchorSign::Pos,
-                                    stationery: false,
-                                })
-                            {
-                                dbg!(route.pivotal_motion.clone());
-                                dbg!(route.pivotal_motion.clone().motor.ln() * (-2.0));
-                                dbg!(
-                                    route
-                                        .pivotal_motion
-                                        .clone()
-                                        .pivotal_global_transform(Pivot::from_rotation_matrix(
-                                            Self::rotation_matrix_from_action(action),
-                                        ))
-                                        .motor
-                                        .ln()
-                                        * (-2.0)
-                                );
-                                dbg!(
-                                    route
-                                        .pivotal_motion
-                                        .clone()
-                                        .pivotal_global_transform(Pivot::from_rotation_matrix(
-                                            Self::rotation_matrix_from_action(action),
-                                        ))
-                                        .pivotal_global_transform(Pivot::from_translation_vector(
-                                            Self::world_coord_as_vec3(
-                                                initial_movement_state.world_coord,
-                                            ),
-                                        ))
-                                        .motor
-                                        .ln()
-                                        * (-2.0)
-                                );
-                            }
-                            if route.initial_anchor
-                                == (TileAnchor {
-                                    position_axis: TileAnchorPositionAxis::External(
-                                        TileExternalAnchorPosition::RearLeft,
-                                        TileExternalAnchorAxis::Z,
-                                    ),
-                                    sign: TileAnchorSign::Pos,
-                                    stationery: false,
-                                })
-                            {
-                                dbg!(route.pivotal_motion.clone());
-                                dbg!(route.pivotal_motion.clone().pivotal_global_transform(
-                                    Pivot::from_rotation_matrix(Self::rotation_matrix_from_action(
-                                        action
-                                    ),)
-                                ));
-                                dbg!(route
-                                    .pivotal_motion
-                                    .clone()
-                                    .pivotal_global_transform(Pivot::from_rotation_matrix(
-                                        Self::rotation_matrix_from_action(action),
-                                    ))
-                                    .pivotal_global_transform(Pivot::from_translation_vector(
-                                        Self::world_coord_as_vec3(
-                                            initial_movement_state.world_coord,
-                                        ),
-                                    )));
-                            }*/
-
                             Some((
                                 MovementState {
                                     world_coord: initial_movement_state.world_coord,
@@ -914,7 +715,7 @@ impl World {
             })
     }
 
-    pub fn motion(&mut self, cursor_coord: Vec2) -> Option<PivotalMotionPath> {
+    pub fn motion(&mut self, cursor_coord: Vec2) -> Option<PivotalMotionTrajectory> {
         const RADIUS_THRESHOLD: f32 = 1.0;
         const ANGLE_THRESHOLD: f32 = std::f32::consts::FRAC_PI_6;
         self.next_movement_targets()
@@ -935,7 +736,7 @@ impl World {
             .min_by(|(_, abs_angle_0), (_, abs_angle_1)| abs_angle_0.total_cmp(abs_angle_1))
             .map(|(movement_target, _)| {
                 self.movement_state = movement_target.movement_state;
-                PivotalMotionPath::from_pivotal_motions(movement_target.pivotal_motions)
+                PivotalMotionTrajectory::from_pivotal_motions(movement_target.pivotal_motions)
             })
     }
 
@@ -1135,52 +936,9 @@ fn test() {
         .for_each(|movement_target| {
             dbg!(movement_target.clone());
             let mut pivotal_motion_path =
-                PivotalMotionPath::from_pivotal_motions(movement_target.pivotal_motions);
+                PivotalMotionTrajectory::from_pivotal_motions(movement_target.pivotal_motions);
             while let Some(transform) = pivotal_motion_path.consume_distance(0.4) {
                 dbg!(transform.transform_point3(Vec3::ZERO));
             }
-            //dbg!((ppga3d::Point::new(1.0, 2.0, -1.0, 0.0)
-            //    .regressive_product(ppga3d::Point::new(1.0, 2.0, -1.0, -1.0))
-            //    * (-std::f32::consts::PI / 4.0))
-            //    .exp())
-            //dbg!(Motor::new(-1.0, 0.0, 0.0, 8.742278e-8, 0.0, 0.50000006, 1.5, 0.0,).ln() * (-2.0));
-            //dbg!(Motor::new(1.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 1.0,).ln() * (-2.0));
-            // dbg!(
-            //     (ppga3d::Line::new(1.5, -0.5, 0.0, 0.0, 0.0, 1.0) * (-std::f32::consts::PI / 4.0))
-            //         .exp(),
-            //     (ppga3d::Line::new(1.0, 0.0, 0.0, 0.0, 0.0, 1.0) * (-std::f32::consts::PI / 4.0))
-            //         .exp(),
-            // );
-            // dbg!(Motor::new(
-            //     -0.7071068,
-            //     0.0,
-            //     -0.0,
-            //     -0.7071067,
-            //     0.0,
-            //     8.940697e-8,
-            //     1.4142135,
-            //     0.0
-            // )
-            // .transformation(ppga3d::Point::new(1.0, 0.0, 0.0, 0.0)));
-            // dbg!(
-            //     RouteFamilyInfo {
-            //         motion_primitive: RouteMotionPrimitive::Plane,
-            //         axis_system: AxisSystem::PosYNegXPosZ,
-            //         external_position: TileExternalAnchorPosition::ForeLeft,
-            //         internal_position_axis: TileInternalAnchorPositionAxis::PlaneForeZ,
-            //         fragments_requirement: &[TileFragment::TriangleZForeLeft],
-            //     }.route(false, false).
-            // );
-            // dbg!(Route::from_external_internal(
-            //     TileExternalAnchorPosition::ForeLeft,
-            //     AxisSystem::PosYNegXPosZ,
-            //     TileInternalAnchorPositionAxis::PlaneForeZ,
-            //     0.0,
-            //     0.0,
-            //     None,
-            //     TileFragment::TriangleZForeLeft,
-            // )
-            // .pivotal_motion
-            // .rewind());
         });
 }

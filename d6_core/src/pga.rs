@@ -65,10 +65,6 @@ impl PivotalMotion {
         }
     }
 
-    // pub fn initial_motor(&self) -> Motor {
-    //     self.motor
-    // }
-
     pub fn target(&self) -> Mat4 {
         Self::matrix_from_motor(
             self.pivots
@@ -116,7 +112,7 @@ impl PivotalMotion {
         let y_axis = motor.transformation(Point::new(0.0, 0.0, 1.0, 0.0));
         let z_axis = motor.transformation(Point::new(0.0, 0.0, 0.0, 1.0));
         let w_axis = motor
-            .transformation(Point::new(1.0, 0.0, 0.0, 1.0))
+            .transformation(Point::new(1.0, 0.0, 0.0, 0.0))
             .signum();
         Mat4::from_cols_array_2d(&[
             [x_axis[1], x_axis[2], x_axis[3], x_axis[0]],
@@ -128,9 +124,9 @@ impl PivotalMotion {
 }
 
 #[derive(Clone, Debug)]
-pub struct PivotalMotionPath(Vec<(Pivot, Motor, Motor, f32)>);
+pub struct PivotalMotionTrajectory(Vec<(Pivot, Motor, Motor, f32)>);
 
-impl PivotalMotionPath {
+impl PivotalMotionTrajectory {
     pub fn from_pivotal_motions(pivotal_motions: Vec<PivotalMotion>) -> Self {
         Self(
             pivotal_motions
@@ -178,133 +174,4 @@ impl PivotalMotionPath {
             })
             .or_else(|| self.consume_distance(consumed_distance - distance))
     }
-
-    // pub fn initial_motor(&self) -> Motor {
-    //     self.0
-    //         .last()
-    //         .map(|(_, motor, _)| motor.clone())
-    //         .unwrap_or_else(|| Pivot::zero().as_motor())
-    // }
-
-    // pub fn terminal_motor(&self) -> Motor {
-    //     self.0
-    //         .first()
-    //         .map(|(pivot, motor, distance)| {
-    //             motor.geometric_product(pivot.scale(*distance).as_motor())
-    //         })
-    //         .unwrap_or_else(|| Pivot::zero().as_motor())
-    // }
-
-    // pub fn from_successive_pivots(initial_motor: Motor, pivots: Vec<Pivot>) -> Self {
-    //     Self {
-    //         knots: std::iter::once((initial_motor, 0.0))
-    //             .chain(
-    //                 pivots
-    //                     .iter()
-    //                     .scan((initial_motor, 0.0), |(motor, distance), pivot| {
-    //                         *distance += pivot.distance(
-    //                             motor
-    //                                 .transformation(Point::new(1.0, 0.0, 0.0, 0.0))
-    //                                 .signum(),
-    //                         );
-    //                         *motor = pivot.as_motor().geometric_product(*motor);
-    //                         Some((*motor, *distance))
-    //                     }),
-    //             )
-    //             .collect(),
-    //         pivots,
-    //     }
-    // }
-
-    // pub fn rewind(self) -> Self {
-    //     let distance = self
-    //         .knots
-    //         .first()
-    //         .zip(self.knots.last())
-    //         .map_or(0.0, |((_, first_distance), (_, last_distance))| {
-    //             first_distance + last_distance
-    //         });
-    //     Self {
-    //         knots: self
-    //             .knots
-    //             .into_iter()
-    //             .rev()
-    //             .map(|(knot_motor, knot_distance)| (knot_motor, distance - knot_distance))
-    //             .collect(),
-    //         pivots: self
-    //             .pivots
-    //             .into_iter()
-    //             .rev()
-    //             .map(|pivot| pivot.rewind())
-    //             .collect(),
-    //     }
-    // }
-
-    // pub fn global_transform(self, motor: Motor) -> Self {
-    //     Self {
-    //         knots: self
-    //             .knots
-    //             .into_iter()
-    //             .map(|(knot_motor, knot_distance)| {
-    //                 (motor.geometric_product(knot_motor), knot_distance)
-    //             })
-    //             .collect(),
-    //         pivots: self.pivots,
-    //     }
-    // }
-
-    // pub fn local_transform(self, motor: Motor) -> Self {
-    //     Self {
-    //         knots: self
-    //             .knots
-    //             .into_iter()
-    //             .map(|(knot_motor, knot_distance)| {
-    //                 (knot_motor.geometric_product(motor), knot_distance)
-    //             })
-    //             .collect(),
-    //         pivots: self.pivots,
-    //     }
-    // }
-
-    // pub fn chain(self, other: Self) -> Self {
-    //     let distance = self
-    //         .knots
-    //         .first()
-    //         .zip(self.knots.last())
-    //         .map_or(0.0, |((_, first_distance), (_, last_distance))| {
-    //             first_distance + last_distance
-    //         });
-    //     let intermediate_pivot = self.knots.last().zip(other.knots.first()).map_or(
-    //         Pivot::zero(),
-    //         |((initial_motor, _), (terminal_motor, _))| {
-    //             Pivot(terminal_motor.geometric_quotient(*initial_motor).ln())
-    //         },
-    //     );
-    //     Self {
-    //         knots: self
-    //             .knots
-    //             .into_iter()
-    //             .chain(
-    //                 other
-    //                     .knots
-    //                     .into_iter()
-    //                     .map(|(knot_pivot, knot_distance)| (knot_pivot, distance + knot_distance)),
-    //             )
-    //             .collect(),
-    //         pivots: self
-    //             .pivots
-    //             .into_iter()
-    //             .chain(std::iter::once(intermediate_pivot))
-    //             .chain(other.pivots.into_iter())
-    //             .collect(),
-    //     }
-    // }
-
-    // pub fn initial_motor(&self) -> Motor {
-    //     self.knots.first().unwrap().0.clone()
-    // }
-
-    // pub fn terminal_motor(&self) -> Motor {
-    //     self.knots.last().unwrap().0.clone()
-    // }
 }

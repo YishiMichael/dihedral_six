@@ -215,8 +215,7 @@ enum RouteMotionPrimitive {
 impl RouteMotionPrimitive {
     fn pivot_motion(&self, backward: bool, flip: bool) -> PivotalMotion {
         let stem_pivot = {
-            let slope = self.slope();
-            let angle = self.rotation_angle();
+            let (slope, angle) = self.slope_and_rotation_angle();
             let angle_cot_angle = (angle != 0.0).then(|| angle / angle.tan()).unwrap_or(1.0);
             Pivot::from_plucker(
                 angle * Vec3::X,
@@ -252,17 +251,11 @@ impl RouteMotionPrimitive {
         motion
     }
 
-    fn slope(&self) -> f32 {
+    fn slope_and_rotation_angle(&self) -> (f32, f32) {
         match self {
-            &Self::Plane | &Self::PlaneExt => 0.0,
-            &Self::Ladder | &Self::LadderExt | &Self::Arch | &Self::ArchExt => 1.0,
-        }
-    }
-
-    fn rotation_angle(&self) -> f32 {
-        match self {
-            &Self::Plane | &Self::PlaneExt | &Self::Ladder | &Self::LadderExt => 0.0,
-            &Self::Arch | &Self::ArchExt => std::f32::consts::FRAC_PI_4,
+            &Self::Plane | &Self::PlaneExt => (0.0, 0.0),
+            &Self::Ladder | &Self::LadderExt => (1.0, 0.0),
+            &Self::Arch | &Self::ArchExt => (1.0, std::f32::consts::FRAC_PI_4),
         }
     }
 
@@ -487,9 +480,26 @@ struct Tile {
     action: D6,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct GridCoord(I16Vec3);
+
+impl GridCoord {
+    pub fn new(x: i16, y: i16, z: i16) -> Self {
+        Self(I16Vec3::new(x, y, z))
+    }
+
+    pub fn grid_position(&self) -> Vec3 {
+        2.0 * self.0.as_vec3()
+    }
+
+    fn add_offset(self, offset: I16Vec3) -> Self {
+        Self(self.0 + offset)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MovementState {
-    world_coord: I16Vec3,
+    grid_coord: GridCoord,
     anchor: TileAnchor,
 }
 
@@ -501,17 +511,13 @@ pub struct MovementTarget {
 }
 
 #[derive(Clone)]
-pub struct World {
-    tile_dict: HashMap<I16Vec3, Tile>,
+pub struct Grid {
+    tile_dict: HashMap<GridCoord, Tile>,
     movement_state: MovementState,
     player_transform: Mat4,
 }
 
-impl World {
-    fn world_coord_as_vec3(world_coord: I16Vec3) -> Vec3 {
-        2.0 * world_coord.as_vec3()
-    }
-
+impl Grid {
     fn rotation_matrix_from_action(action: D6) -> Mat3 {
         const REFLECTION_MATRIX: Mat3 = Mat3::from_cols_array_2d(&[
             [-1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0],
@@ -545,7 +551,7 @@ impl World {
                 let coord_offset = external_position.into_offset();
                 let external_position = TileExternalAnchorPosition::from_offset(-coord_offset);
                 Some(MovementState {
-                    world_coord: movement_state.world_coord + coord_offset,
+                    grid_coord: movement_state.grid_coord.add_offset(coord_offset),
                     anchor: TileAnchor {
                         position_axis: TileAnchorPositionAxis::External(
                             external_position,
@@ -559,92 +565,93 @@ impl World {
         }
     }
 
-    fn next_movement_targets_from(
+    fn iter_next_movement_targets_from(
         movement_state: MovementState,
-        tile_dict: &HashMap<I16Vec3, Tile>,
-    ) -> Vec<MovementTarget> {
-        std::iter::once(movement_state)
-            .chain(World::movement_state_synonym(movement_state))
-            .flat_map(move |initial_movement_state| {
-                tile_dict
-                    .get(&initial_movement_state.world_coord)
-                    .into_iter()
-                    .flat_map(move |tile| {
-                        ROUTE_LIST.iter().filter_map(move |route| {
-                            route
-                                .fragments_requirement
-                                .is_subset(&tile.fragments)
-                                .then_some(())?;
-                            let action = tile.action;
-                            (route.initial_anchor.act(action) == initial_movement_state.anchor)
-                                .then_some(())?;
-                            Some((
-                                MovementState {
-                                    world_coord: initial_movement_state.world_coord,
-                                    anchor: route.terminal_anchor.act(action),
-                                },
+        tile_dict: &HashMap<GridCoord, Tile>,
+    ) -> Box<dyn Iterator<Item = MovementTarget> + '_> {
+        Box::new(
+            std::iter::once(movement_state)
+                .chain(Grid::movement_state_synonym(movement_state))
+                .flat_map(move |initial_movement_state| {
+                    tile_dict
+                        .get(&initial_movement_state.grid_coord)
+                        .into_iter()
+                        .flat_map(move |tile| {
+                            ROUTE_LIST.iter().filter_map(move |route| {
                                 route
-                                    .pivotal_motion
-                                    .clone()
-                                    .pivotal_global_transform(Pivot::from_rotation_matrix(
-                                        Self::rotation_matrix_from_action(action),
-                                    ))
-                                    .pivotal_global_transform(Pivot::from_translation_vector(
-                                        Self::world_coord_as_vec3(
-                                            initial_movement_state.world_coord,
-                                        ),
-                                    )),
-                            ))
+                                    .fragments_requirement
+                                    .is_subset(&tile.fragments)
+                                    .then_some(())?;
+                                let action = tile.action;
+                                (route.initial_anchor.act(action) == initial_movement_state.anchor)
+                                    .then_some(())?;
+                                Some((
+                                    MovementState {
+                                        grid_coord: initial_movement_state.grid_coord,
+                                        anchor: route.terminal_anchor.act(action),
+                                    },
+                                    route
+                                        .pivotal_motion
+                                        .clone()
+                                        .pivotal_global_transform(Pivot::from_rotation_matrix(
+                                            Self::rotation_matrix_from_action(action),
+                                        ))
+                                        .pivotal_global_transform(Pivot::from_translation_vector(
+                                            initial_movement_state.grid_coord.grid_position(),
+                                        )),
+                                ))
+                            })
                         })
-                    })
-            })
-            .flat_map(|(terminal_movement_state, pivotal_motion)| {
-                terminal_movement_state
-                    .anchor
-                    .stationery
-                    .then(|| {
-                        std::iter::once(MovementTarget {
-                            movement_state: terminal_movement_state,
-                            transform: pivotal_motion.target(),
-                            pivotal_motions: Vec::new(),
+                })
+                .flat_map(|(terminal_movement_state, pivotal_motion)| {
+                    terminal_movement_state
+                        .anchor
+                        .stationery
+                        .then(|| {
+                            Box::new(std::iter::once(MovementTarget {
+                                movement_state: terminal_movement_state,
+                                transform: pivotal_motion.target(),
+                                pivotal_motions: Vec::new(),
+                            }))
+                                as Box<dyn Iterator<Item = MovementTarget>>
                         })
-                        .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_else(|| {
-                        Self::next_movement_targets_from(terminal_movement_state, tile_dict)
-                    })
-                    .into_iter()
-                    .map(move |successive_movement_target| MovementTarget {
-                        movement_state: successive_movement_target.movement_state,
-                        transform: successive_movement_target.transform,
-                        pivotal_motions: std::iter::once(pivotal_motion.clone())
-                            .chain(successive_movement_target.pivotal_motions)
-                            .collect(),
-                    })
-            })
-            .filter(move |movement_target| {
-                std::iter::once(movement_state)
-                    .chain(World::movement_state_synonym(movement_state))
-                    .all(|initial_movement_state| {
-                        initial_movement_state != movement_target.movement_state
-                    })
-            })
-            .collect()
+                        .unwrap_or_else(|| {
+                            Self::iter_next_movement_targets_from(
+                                terminal_movement_state,
+                                tile_dict,
+                            )
+                        })
+                        .into_iter()
+                        .map(move |successive_movement_target| MovementTarget {
+                            pivotal_motions: std::iter::once(pivotal_motion.clone())
+                                .chain(successive_movement_target.pivotal_motions)
+                                .collect(),
+                            ..successive_movement_target
+                        })
+                })
+                .filter(move |movement_target| {
+                    std::iter::once(movement_state)
+                        .chain(Grid::movement_state_synonym(movement_state))
+                        .all(|initial_movement_state| {
+                            initial_movement_state != movement_target.movement_state
+                        })
+                }),
+        )
     }
 
-    fn next_movement_targets(&self) -> Vec<MovementTarget> {
-        Self::next_movement_targets_from(self.movement_state, &self.tile_dict)
+    fn iter_next_movement_targets(&self) -> Box<dyn Iterator<Item = MovementTarget> + '_> {
+        Self::iter_next_movement_targets_from(self.movement_state, &self.tile_dict)
     }
 
-    pub fn iter_coords(&self) -> impl Iterator<Item = I16Vec3> + '_ {
+    pub fn iter_coords(&self) -> impl Iterator<Item = GridCoord> + '_ {
         self.tile_dict.keys().cloned()
     }
 
     fn conformal_transform(vector: Vec3) -> Vec2 {
         // The rotation transforms:
-        // normalize((-1, +1, 00)) |-> (1, 0, 0)
-        // normalize((-1, -1, +2)) |-> (0, 1, 0)
-        // normalize((+1, +1, +1)) |-> (0, 0, 1)
+        // normalize((-1,  1,  0)) |-> (1, 0, 0)
+        // normalize((-1, -1,  2)) |-> (0, 1, 0)
+        // normalize(( 1,  1,  1)) |-> (0, 0, 1)
         // This is a unitary matrix, so the inverse is its transpose.
         lazy_static::lazy_static! {
             static ref CONFORMAL_PROJECTION_MATRIX: Mat3 = Mat3::from_cols(
@@ -671,7 +678,7 @@ impl World {
 
     pub fn iter_tile_fragment_shapes(
         &self,
-        coord: I16Vec3,
+        coord: GridCoord,
     ) -> impl Iterator<Item = (Vec<Vec2>, Vec3)> + '_ {
         self.tile_dict
             .get(&coord)
@@ -683,20 +690,20 @@ impl World {
                         .get(tile_fragment)
                         .unwrap()
                         .clone()
-                        .transform(Mat4::from_translation(Self::world_coord_as_vec3(coord))),
+                        .transform(Mat4::from_translation(coord.grid_position())),
                 )
             })
     }
 
     pub fn iter_tile_frame_shapes(
         &self,
-        coord: I16Vec3,
+        coord: GridCoord,
     ) -> impl Iterator<Item = (Vec<Vec2>, Vec3)> + '_ {
         self.tile_dict.get(&coord).into_iter().flat_map(move |_| {
             Self::iter_shapes_from_polygons(
                 FRAME_POLYGONS
                     .clone()
-                    .transform(Mat4::from_translation(Self::world_coord_as_vec3(coord))),
+                    .transform(Mat4::from_translation(coord.grid_position())),
             )
         })
     }
@@ -706,8 +713,7 @@ impl World {
     }
 
     pub fn iter_marker_shapes(&self) -> impl Iterator<Item = (Vec<Vec2>, Vec3)> + '_ {
-        self.next_movement_targets()
-            .into_iter()
+        self.iter_next_movement_targets()
             .flat_map(|movement_target| {
                 Self::iter_shapes_from_polygons(
                     MARKER_POLYGONS.clone().transform(movement_target.transform),
@@ -715,11 +721,10 @@ impl World {
             })
     }
 
-    pub fn motion(&mut self, cursor_coord: Vec2) -> Option<PivotalMotionTrajectory> {
+    pub fn motion_trajectory(&mut self, cursor_coord: Vec2) -> Option<PivotalMotionTrajectory> {
         const RADIUS_THRESHOLD: f32 = 1.0;
         const ANGLE_THRESHOLD: f32 = std::f32::consts::FRAC_PI_6;
-        self.next_movement_targets()
-            .into_iter()
+        self.iter_next_movement_targets()
             .filter_map(|movement_target| {
                 let player_coord =
                     Self::conformal_transform(self.player_transform.transform_point3(Vec3::ZERO));
@@ -746,10 +751,10 @@ impl World {
 }
 
 lazy_static::lazy_static! {
-    pub static ref WORLD_LIST: Vec<World> = vec![
-        World {
+    pub static ref WORLD_LIST: Vec<Grid> = vec![
+        Grid {
             tile_dict: map_macro::hash_map! {
-                I16Vec3::new(0, 0, 0) => Tile {
+                GridCoord::new(0, 0, 0) => Tile {
                     fragments: map_macro::hash_set! {
                         TileFragment::TriangleZForeLeft,
                         TileFragment::TriangleZForeRight,
@@ -760,7 +765,7 @@ lazy_static::lazy_static! {
                     },
                     action: D6::R0,
                 },
-                I16Vec3::new(-1, 1, 0) => Tile {
+                GridCoord::new(-1, 1, 0) => Tile {
                     fragments: map_macro::hash_set! {
                         TileFragment::TriangleZForeLeft,
                         TileFragment::TriangleZForeRight,
@@ -771,7 +776,7 @@ lazy_static::lazy_static! {
                     },
                     action: D6::R0,
                 },
-                I16Vec3::new(0, -1, 1) => Tile {
+                GridCoord::new(0, -1, 1) => Tile {
                     fragments: map_macro::hash_set! {
                         TileFragment::TriangleZForeLeft,
                         TileFragment::TriangleZForeRight,
@@ -782,7 +787,7 @@ lazy_static::lazy_static! {
                     },
                     action: D6::R0,
                 },
-                I16Vec3::new(1, 0, -1) => Tile {
+                GridCoord::new(1, 0, -1) => Tile {
                     fragments: map_macro::hash_set! {
                         TileFragment::TriangleZForeLeft,
                         TileFragment::TriangleZForeRight,
@@ -793,7 +798,7 @@ lazy_static::lazy_static! {
                     },
                     action: D6::R0,
                 },
-                I16Vec3::new(0, 1, -1) => Tile {
+                GridCoord::new(0, 1, -1) => Tile {
                     fragments: map_macro::hash_set! {
                         TileFragment::TriangleZForeLeft,
                         TileFragment::TriangleZForeRight,
@@ -804,7 +809,7 @@ lazy_static::lazy_static! {
                     },
                     action: D6::R0,
                 },
-                I16Vec3::new(-1, 0, 1) => Tile {
+                GridCoord::new(-1, 0, 1) => Tile {
                     fragments: map_macro::hash_set! {
                         TileFragment::TriangleZForeLeft,
                         TileFragment::TriangleZForeRight,
@@ -815,7 +820,7 @@ lazy_static::lazy_static! {
                     },
                     action: D6::R0,
                 },
-                I16Vec3::new(1, -1, 0) => Tile {
+                GridCoord::new(1, -1, 0) => Tile {
                     fragments: map_macro::hash_set! {
                         TileFragment::TriangleZForeLeft,
                         TileFragment::TriangleZForeRight,
@@ -828,7 +833,7 @@ lazy_static::lazy_static! {
                 },
             },
             movement_state: MovementState {
-                world_coord: I16Vec3::new(0, 0, 0),
+                grid_coord: GridCoord::new(0, 0, 0),
                 anchor: TileAnchor {
                     position_axis: TileAnchorPositionAxis::Internal(
                         TileInternalAnchorPositionAxis::PlaneForeZ,
@@ -839,9 +844,9 @@ lazy_static::lazy_static! {
             },
             player_transform: Mat4::from_translation(Vec3::new(1.0, 1.0, 0.0)),
         },
-        World {
+        Grid {
             tile_dict: map_macro::hash_map! {
-                I16Vec3::new(0, 0, 0) => Tile {
+                GridCoord::new(0, 0, 0) => Tile {
                     fragments: map_macro::hash_set! {
                         TileFragment::TriangleZSideLeft,
                         TileFragment::TriangleZRearLeft,
@@ -849,13 +854,13 @@ lazy_static::lazy_static! {
                     },
                     action: D6::R0,
                 },
-                I16Vec3::new(-1, 0, 1) => Tile {
+                GridCoord::new(-1, 0, 1) => Tile {
                     fragments: map_macro::hash_set! {
                         TileFragment::LadderMajorFace
                     },
                     action: D6::R1,
                 },
-                I16Vec3::new(-2, 0, 2) => Tile {
+                GridCoord::new(-2, 0, 2) => Tile {
                     fragments: map_macro::hash_set! {
                         TileFragment::TriangleZForeLeft,
                         TileFragment::TriangleZForeRight,
@@ -863,7 +868,7 @@ lazy_static::lazy_static! {
                     },
                     action: D6::R0,
                 },
-                I16Vec3::new(-1, -1, 2) => Tile {
+                GridCoord::new(-1, -1, 2) => Tile {
                     fragments: map_macro::hash_set! {
                         TileFragment::TriangleZSideRight,
                         TileFragment::TriangleZRearLeft,
@@ -871,7 +876,7 @@ lazy_static::lazy_static! {
                     },
                     action: D6::R0,
                 },
-                I16Vec3::new(-1, -2, 3) => Tile {
+                GridCoord::new(-1, -2, 3) => Tile {
                     fragments: map_macro::hash_set! {
                         TileFragment::TriangleZForeLeft,
                         TileFragment::TriangleZForeRight,
@@ -879,7 +884,7 @@ lazy_static::lazy_static! {
                     },
                     action: D6::R0,
                 },
-                I16Vec3::new(0, -3, 3) => Tile {
+                GridCoord::new(0, -3, 3) => Tile {
                     fragments: map_macro::hash_set! {
                         TileFragment::TriangleXRear,
                         TileFragment::TriangleYFore,
@@ -887,7 +892,7 @@ lazy_static::lazy_static! {
                     },
                     action: D6::R2,
                 },
-                I16Vec3::new(1, -3, 2) => Tile {
+                GridCoord::new(1, -3, 2) => Tile {
                     fragments: map_macro::hash_set! {
                         TileFragment::TriangleZSideRight,
                         TileFragment::TriangleZRearLeft,
@@ -895,13 +900,13 @@ lazy_static::lazy_static! {
                     },
                     action: D6::R5,
                 },
-                I16Vec3::new(1, -2, 1) => Tile {
+                GridCoord::new(1, -2, 1) => Tile {
                     fragments: map_macro::hash_set! {
                         TileFragment::ArchMajorFace,
                     },
                     action: D6::R2,
                 },
-                I16Vec3::new(1, -1, 0) => Tile {
+                GridCoord::new(1, -1, 0) => Tile {
                     fragments: map_macro::hash_set! {
                         TileFragment::TriangleZSideRight,
                         TileFragment::TriangleZRearLeft,
@@ -911,7 +916,7 @@ lazy_static::lazy_static! {
                 },
             },
             movement_state: MovementState {
-                world_coord: I16Vec3::new(0, 0, 0),
+                grid_coord: GridCoord::new(0, 0, 0),
                 anchor: TileAnchor {
                     position_axis: TileAnchorPositionAxis::Internal(
                         TileInternalAnchorPositionAxis::PlaneForeZ,
@@ -929,8 +934,7 @@ lazy_static::lazy_static! {
 fn test() {
     let world = &WORLD_LIST[0];
     world
-        .next_movement_targets()
-        .into_iter()
+        .iter_next_movement_targets()
         // .skip(0)
         // .next()
         .for_each(|movement_target| {

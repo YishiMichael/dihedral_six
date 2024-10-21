@@ -50,13 +50,10 @@ fn iter_ladder_coords() -> impl Iterator<Item = Vec2> {
 }
 
 fn iter_arch_coords() -> impl Iterator<Item = Vec2> {
-    const RESOLUTION: usize = 4;
+    const RESOLUTION: usize = 16;
     (0..=RESOLUTION).map(|i| {
-        Vec2::new(
-            (i as f32 / RESOLUTION as f32).cos(),
-            (i as f32 / RESOLUTION as f32).sin(),
-        ) * 2.0
-            - 1.0
+        let (s, c) = (i as f32 / RESOLUTION as f32 * std::f32::consts::FRAC_PI_2).sin_cos();
+        Vec2::new(c, s) * 2.0 - 1.0
     })
 }
 
